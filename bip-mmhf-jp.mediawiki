@@ -33,6 +33,7 @@ In addition, the block includes a set of transactions.
 
 Transaction は前回の block の UTXO state を必ずアップデートします。
 もし　transaction が存在しない UTXO を扱おうとしたならば、その block は不正なものになります。(翻訳要検討）
+
 The transactions must update the UTXO state from the previous block.
 If they attempt to consume a serial that does not exist in the UTXO state (whether from the previous block, or added during processing of this block), the block is invalid.
 
