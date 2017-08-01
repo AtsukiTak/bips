@@ -1,0 +1,231 @@
+<pre>
+  BIP: ?
+  Title: 2017 Hardfork
+  Author: Luke Dashjr <luke_bip-mmhf@dashjr.org>
+  Status: Draft
+  Type: Standards Track
+  Created: 2015-02-12
+</pre>
+
+==Abstract==
+
+Expand block size and mining nonce space, as well as add native merge-mining support.
+
+==Specification==
+
+=== Block header fields ===
+
+Each block includes a number of header fields:
+
+* A total of up to 600 bits of nonce space:
+** 32-bit class 1 nonce which can be changed immediately before the final stage of the DMMS (PoW) calculation
+** 24-bit class 2 nonce
+** Variable-length (32-bit to 544-bit) class 3 nonce
+* Previous block's hash
+* Timestamp, truncated to 32-bit
+* Height
+* 8-bit merge-mining-hardfork deployment bitfield
+* 16-bit hardfork deployment bitfield
+* 32-bit softfork deployment bitfield (as in BIP 9)
+
+In addition, the block includes a set of transactions.
+
+The transactions must update the UTXO state from the previous block.
+If they attempt to consume a serial that does not exist in the UTXO state (whether from the previous block, or added during processing of this block), the block is invalid.
+
+Witnesses for inputs consuming a valid UTXO must be checked against the pubkey script for that UTXO.
+If such a check fails for any input, the block is invalid.
+
+The total cost of transactions in a block must not exceed FIXME nor the total sigop count exceed FIXME, or the block is invalid.
+FIXME: SigOps within new blocks are to be counted only in witness scripts and the UTXO pubkey scripts they are checked against (no longer pubkey scripts of new UTXOs) using the counting rules from BIP 141.
+
+=== Merkle tree algorithm ===
+
+For each object, compute a digest which represents it in the merkle tree.  Each digest consists of a hash and a number of sum fields.
+
+The digests for the transaction merkle tree consist of three fields.
+    
+    uint256 hash;  // a SHA256d hash
+    uint64 fees;   // the total fees paid by descendents of this node
+    uint64 size;   // the total size of all descendents of this node
+    
+The digests for the witness merkle tree consist of three fields.
+    
+    uint256 hash;  // a SHA256d hash
+    uint32 sigops; // the total number of sigops in descendents of this node
+    uint64 size;   // the total size of all descendents of this node
+    
+For the flags byte, there are 3 bits defined.
+    
+    FLAG_LEAF = 0x80
+    FLAG_PLURAL = 0x40
+    FLAG_MERKLE_ROOT = 0x20
+    
+The remaining bits are reserved and should be set to zero.
+
+The FLAG_LEAF bit should be set for the lowest level of the tree only.
+
+The FLAG_PLURAL bit should be set when compressing two hashes into a single hash.
+
+The FLAG_MERKLE_ROOT bit should be set for the final hashing step to generate the merkle root.
+
+Generate the digest for each of the transactions or witness data.
+
+When generating the transaction tree, generate the leaf digests as follows.
+    
+    uint256 hash = txid
+    unit64 fees = sum(inputs) - sum(outputs)
+    uint64 size = size(tx serialization without witness data)
+    
+When generating the witness tree, generate the leaf digests as follows.
+
+    uint256 hash = txid
+    uint32 sigops = sigop count for transaction
+    uint64 size = size(tx serialization with witness data)
+
+For each pair of digests, (left, right), in the vector, compress them by replacing them with:
+    
+    flags = FLAG_PLURAL (or FLAG_PLURAL | FLAG_LEAF for the first pass)
+    
+    compressed.hash = SHA256d(left.hash | left.fees | left.size | right.hash | right.fees | right.size | flags)
+    compressed.fees = left.fees + right.fees
+    compressed.size = left.size + right.size
+    
+If the last hash is unmatched due to an odd number elements, compress it by replacing it with:
+    
+    flags = 0 (or FLAG_LEAF for the first pass)
+    
+    compressed.hash = SHA256d(left.hash | left.fees | left.size | 256 zeros | 64 zeros | 64 zeros | flags)
+    compressed.fees = left.fees
+    compressed.size = left.size
+
+Apply the compression steps until the number of digests has been reduced to a single digest.
+    
+Finally, to create the final merkle tree root, the root hash is compressed:
+
+* 8 bytes: element_count : Total number of leafs in the tree
+    
+    flags = FLAG_MERKLE (or FLAG_MERKLE | FLAG_LEAF)
+    
+    final_root_hash = SHA256d(root.hash | root.fees | root.size | element_count | 192 zeros | 64 zeros | 64 zeros | flags)
+    
+For the witness tree, the sum portions are not included.  The flags field is the same and the compression formula is simplied.
+
+To create the witness tree, the fees field should be replaced with the sigops field.
+
+=== Dynamic membership multiparty signature DMMS) algorithm ===
+
+Hash TMR ("Transaction Merkle Root") is produced by performing the merkle tree algorithm with the ids of all transactions to be included in the block.
+
+Hash WMR ("Witness Merkle Root") is produced by performing the merkle tree algorithm with the full hash (including witness data) of all transactions to be included in the block.
+
+Hash H-C ("Header C") is produced by performing SHA256d over the following data (FIXME: endian):
+
+* 8 bytes: transaction data canonical size (in bytes)
+* 8 bytes: transaction cost total
+* 8 bytes: transaction sigop total
+* 4 bytes: transaction count
+* 2 bytes: hardfork deployment bitfield
+* 4 bytes: softfork deployment bitfield
+* 32 bytes: Hash TMR
+* 32 bytes: Hash WMR
+
+Hash CMR ("Commitment Merkle Root") MAY be produced by performing the merkle tree algorithm with hash H-C in a vector of up to 2^32 elements, but MUST ONLY be checked as a partial branch leading to hash H-C.
+Specifically, nodes MUST NOT concern or otherwise check anything in regard to other branches in the merkle tree.
+The position of hash H-C in the vector MUST be calculated as follows:
+
+    uint32_t lrot(uint32_t x, uint32_t n) {
+        return (x << n) | (x >> (32 - n));
+    }
+
+    // nonce is the first 4 bytes of the class 3 nonce, interpreted as a big endian integer
+    uint32_t vector_position_for_hc(uint32_t nonce, uint32_t vector_size) {
+        const uint32_t chain_id = 0x62697463;  // "bitc"
+        uint32_t a, b, c;
+        a = (0xb14c0121 ^ chain_id) - lrot(chain_id, 14);
+        b = (nonce ^ a) - lrot(a, 11);
+        c = (chain_id ^ b) - lrot(b, 25);
+        a = (a ^ c) - lrot(c, 16);
+        b = (b ^ a) - lrot(a, 4);
+        c = (c ^ b) - lrot(b, 14);
+        a = (a ^ c) - lrot(c, 24);
+        return a % vector_size;
+    }
+
+Hash H-B ("Header B") is produced by performing SHA256d over the following data:
+
+* 41 bytes: constant data:
+
+    77 77 77 77  01 00 00 00  00 00 00 00  00 00 00 00
+    00 00 00 00  00 00 00 00  00 00 00 00  00 00 00 00
+    00 00 00 00  00 ff ff ff  ff
+
+* 1 byte: (length of following 41-103 bytes of data) minus 3
+* 41-103 bytes:
+** serialised height (see BIP 34)
+** 1 byte: merge-mining-hardfork deployment bitfield
+** Hash CMR
+** Class 3 nonce
+* 1 byte: length of preceding data (for midstate compression)
+* 14 bytes: constant data:
+
+    01 00 00 00  00 00 00 00  00 00 00 00 00 00
+
+FIXME: Do we want to allow 0-value outputs? Necessary for 21inc compat; makes future OP_RETURN additions possible (but not an ideal location for added data)
+
+Hash H-A ("Header A") is produced by performing SHA256d over the following data:
+
+* 3 bytes: Class 2 nonce
+* 1 byte: constant 0x60
+* 32 bytes: Previous block's hash
+* 32 bytes: Hash H-B
+* 4 bytes: Timestamp
+* 4 bytes: current block target (encoded as Bitcoin's traditional "bits")
+* 4 bytes: Class 1 nonce
+
+Hash H-A is then to be interpreted as a little-endian (FIXME: check) number, and compared to the current block target.
+If the hash is less than or equal to the target, the DMMS signature is valid.
+
+=== Hardfork deployment bitfields ===
+
+The hardfork deployment bitfields function as in BIP 9, however due to the nature of hardforks:
+
+* Nodes MUST defer the "starttime" until the node has explicitly indicated consent of the entire network to the hardfork.
+* Mining nodes specifically MUST defer the "starttime" until they are confident the entire network has consented to the hardfork AND indicated network support in their node.
+* If an unrecognised hard fork bit reaches activation conditions on the longest chain, nodes must stop at the last block under the known rules until the node operator chooses to accept or reject the hardfork.
+* If an unconsented/rejected hard fork bit reaches activation, the node should switch to the alternative proof-of-work algorithm to move forward from the forking point.
+* A hardfork cannot be accepted by the node so long as it does not implement/recognise it. Until the software is upgraded, it can only remain in the "unrecognised" or "unconsented/rejected" state.
+* FIXME: If greater than X% of transacted bitcoins over the signalling period indicate rejection of the hardfork, it must not activate.
+* FIXME: how to deal with the original chain putting more work on a non-forking chain, after PoW has switched.
+
+==Motivation==
+
+Bitcoin mining needs to modify hashed data in order to find valid blocks.
+32 bits of arbitrary data, the nonce, is available directly in the block header.
+When this space is exhausted, miners are forced to modify the transaction data, traditionally the generation transaction's dummy scriptSig (the coinbase) to influence the merkle root in the block header.
+However, this process is complicated, and not suitable for outsourcing to hardware, which is rapidly reaching hashrates that cannot be kept up with by computers.
+By expanding the nonce space that can be searched in hardware, this problem is fixed.
+
+TODO: Block cost limit increase (or another BIP?)
+
+TODO: Merge mining
+
+==Rationale==
+
+One solution to the nonce size limit is to expand the nonce space available in the block header, either by allowing it to be variably longer than its current fixed size of 80 bytes, or by repurposing unused sections as additional nonce.
+To expand the block size, it is sufficient to merely tolerate more transactions.
+
+However, these methods of hardforking would leave old nodes not only broken, but susceptible to a security compromise as they will reject such new blocks, yet accept as valid a shorter chain satisfying the old rules.
+This is addressed by implementing this hardfork using hashes that old nodes will recognise as valid empty blocks.
+
+==Backward Compatibility==
+
+This hardfork will permanently disable all nodes, both full and light, which do not explicitly add support for it.
+However, their security will not be compromised due to the implementation (TODO: elaborate here).
+To migrate, all nodes must choose to upgrade, and miners must express supermajority support.
+
+If miners attempt to enact this hardfork against user consent, it is trivial to override with a minimal hardfork.
+
+==Reference Implementation==
+
+TODO
