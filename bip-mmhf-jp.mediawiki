@@ -9,35 +9,39 @@
 
 ==Abstract==
 
-Expand block size and mining nonce space, as well as add native merge-mining support.
+Merge-miningをネイティブサポートし、ブロックサイズとnonce spaceを拡大する。
 
 ==Specification==
 
 === Block header fields ===
 
-Each block includes a number of header fields:
+各Blockは下記のようなヘッダーフィールドを持つ。
 
-* A total of up to 600 bits of nonce space:
-** 32-bit class 1 nonce which can be changed immediately before the final stage of the DMMS (PoW) calculation
-** 24-bit class 2 nonce
-** Variable-length (32-bit to 544-bit) class 3 nonce
+* 600 bits までの nonce space の総計
+** 最終段階のDMMS (PoW) の計算の前に即座に変更可能な32-bitの class 1 nonce
+** 24-bitの class 2 nonce
+** 可変長（32 ~ 544 bit)の class 3 nonce
 * Previous block's hash
-* Timestamp, truncated to 32-bit
-* Height
+* 32bit Timestamp
+* Block height
 * 8-bit merge-mining-hardfork deployment bitfield
 * 16-bit hardfork deployment bitfield
 * 32-bit softfork deployment bitfield (as in BIP 9)
 
+さらに block は transaction のセットを持つ。
 In addition, the block includes a set of transactions.
 
+Transaction は前回の block の UTXO state を必ずアップデートします。
+もし　transaction が存在しない UTXO を扱おうとしたならば、その block は不正なものになります。(翻訳要検討）
 The transactions must update the UTXO state from the previous block.
 If they attempt to consume a serial that does not exist in the UTXO state (whether from the previous block, or added during processing of this block), the block is invalid.
 
-Witnesses for inputs consuming a valid UTXO must be checked against the pubkey script for that UTXO.
-If such a check fails for any input, the block is invalid.
+正当なUTXOを扱っている transaxtion の input の署名は UTXO の　pubkey script に対して必ずチェックされます。
+もしチェックが失敗したならば、その block は不正なものになります。
 
-The total cost of transactions in a block must not exceed FIXME nor the total sigop count exceed FIXME, or the block is invalid.
-FIXME: SigOps within new blocks are to be counted only in witness scripts and the UTXO pubkey scripts they are checked against (no longer pubkey scripts of new UTXOs) using the counting rules from BIP 141.
+block 内の transactions のコストの合計は　FIXME を超えてはなりません。また、sigop の数の合計も、FIXME を超えてはなりません。
+もし超えた場合は、その block は無効なものになります。
+FIXME : 新しい block の SigOps は　witness scripts と チェック済みの UTXO pubkey script のみが（新しい UTXOs の pubkey scripts は含まず） BIP 141 のカウンティングルールに従ってカウントされます。
 
 === Merkle tree algorithm ===
 
